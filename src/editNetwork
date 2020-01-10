@@ -1,0 +1,140 @@
+#!/usr/bin/python
+#
+# editNetwork: replace a vdsm-controlled network with a new one.
+#
+# delNetwork, addNetwork, wait for traffic, rollback if needed.
+
+import sys
+import os
+import time
+import subprocess
+
+import utils
+import netinfo
+import constants
+from define import errCode
+
+import neterrors as ne
+
+def debug(s, *args):
+    if args:
+        s = s % args
+    print >> sys.stderr, s
+
+def clientSeen(timeout):
+    start = time.time()
+    while timeout >= 0:
+        if os.stat(constants.P_VDSM_CLIENT_LOG).st_mtime > start:
+            return True
+        time.sleep(1)
+        timeout -= 1
+    return False
+
+def restore(conffiles):
+    for name, content in conffiles.iteritems():
+        p = subprocess.Popen([constants.EXT_WRITE_NET_CONFIG, name],
+                             stdin=subprocess.PIPE,
+                             close_fds=True)
+        p.communicate(content)
+        debug('restore %s', name)
+    subprocess.Popen(['/etc/init.d/network', 'start'])
+
+def addNetwork(bridge, vlan, bond, nics, options):
+    """Add a new network to this vds."""
+
+    debug('addNetwork(%s,%s,%s,%s,%s)' % (bridge, vlan, bond,
+                    nics, options))
+    p = subprocess.Popen([constants.EXT_ADDNETWORK,
+            bridge,
+            vlan, bond, ','.join(nics)] +
+            [ '%s=%s' % (k, v) for k, v in options.iteritems()],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            close_fds=True)
+    out, err = p.communicate()
+    debug(out + err)
+    return p.returncode
+
+def delNetwork(bridge, vlan, bond, nics, options={}):
+    """Delete a network from this vds."""
+
+    debug('delNetwork(%s,%s,%s,%s,%s)' % (bridge, vlan, bond,
+                    nics, options))
+    p = subprocess.Popen([constants.EXT_DELNETWORK,
+            bridge,
+            vlan, bond, ','.join(nics)] +
+            [ '%s=%s' % (k, v) for k, v in options.iteritems()],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            close_fds=True)
+    out, err = p.communicate()
+    debug(out + err)
+    return p.returncode
+
+def editNetwork(oldBridge, newBridge, vlan, bond, nics, options):
+    oldVlan, oldBond, oldNics = netinfo.getVlanBondingNic(oldBridge)
+    conffiles = {}
+    conffile = utils.NET_CONF_DIR + 'ifcfg-' + oldBridge
+    conffiles[conffile] = open(conffile).read()
+    debug('store %s', conffile)
+    if oldVlan:
+        conffile = utils.NET_CONF_DIR + 'ifcfg-' + \
+                   (oldBond or oldNics[0]) + '.' + oldVlan
+        conffiles[conffile] = open(conffile).read()
+        debug('store %s', conffile)
+    if oldBond:
+        conffile = utils.NET_CONF_DIR + 'ifcfg-' + oldBond
+        conffiles[conffile] = open(conffile).read()
+        debug('store %s', conffile)
+    for nic in oldNics:
+        conffile = utils.NET_CONF_DIR + 'ifcfg-' + nic
+        conffiles[conffile] = open(conffile).read()
+        debug('store %s', conffile)
+
+    res = delNetwork(oldBridge, oldVlan, oldBond, oldNics, {})
+    if res:
+        return res
+    res = addNetwork(newBridge, vlan, bond, nics, options)
+    if res:
+        restore(conffiles)
+        return res
+    if utils.tobool(options.get('connectivityCheck', False)):
+        if not clientSeen(int(options.get('connectivityTimeout', '4'))):
+            delNetwork(newBridge, vlan, bond, nics,
+                            {'force': 'true'})
+            restore(conffiles)
+            return errCode['noConPeer']['status']['code']
+    return 0
+
+def usage():
+    print """Usage:
+
+%s oldBridge newBridge {vlan-id|''} {bonding|''} nic[,nic] [option=value]
+
+replace a network with a new one (defined by a bridge, tagged by vlan-id,
+connected through bonding device to nics).
+
+oldBridge - network name to be deleted
+newBridge - network name to be added
+vlan-id - integer 0-4095 or empty string if no vlan
+bonding - bonding device name or empty string if a single nic
+nic[,nic] - possibly-multiple nics
+""" % (sys.argv[0])
+    sys.exit(ne.ERR_BAD_PARAMS)
+
+
+if len(sys.argv) <= 5:
+    usage()
+
+oldBridge, newBridge, vlan, bonding, nics = sys.argv[1:6]
+if nics == '':
+    nics = []
+else:
+    nics = nics.split(',')
+
+options = {}
+for arg in sys.argv[6:]:
+    k, v = arg.split('=', 1)
+    options[k] = v
+
+sys.exit(editNetwork(oldBridge, newBridge, vlan, bonding, nics, options))

@@ -1,0 +1,62 @@
+From e3fa979563d4774751e3cf79e97fa8f3a2ddbbf3 Mon Sep 17 00:00:00 2001
+From: Saggi Mizrahi <smizrahi@redhat.com>
+Date: Wed, 27 Apr 2011 11:20:54 +0300
+Subject: [PATCH 3/3] Fixed master mount validation for file domains
+
+Change-Id: I243703adacad8d6a7e300ffe4e7c940f03cf8a3d
+Reviewed-on: http://gerrit.usersys.redhat.com/328
+Tested-by: Dan Kenigsberg <danken@redhat.com>
+Reviewed-by: Dan Kenigsberg <danken@redhat.com>
+---
+ vdsm/storage/blockSD.py |    3 +++
+ vdsm/storage/fileSD.py  |    3 +++
+ vdsm/storage/sd.py      |    3 +--
+ 3 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/vdsm/storage/blockSD.py b/vdsm/storage/blockSD.py
+index 420a2d1..06e1d01 100644
+--- a/vdsm/storage/blockSD.py
++++ b/vdsm/storage/blockSD.py
+@@ -736,6 +736,9 @@ class BlockStorageDomain(sd.StorageDomain):
+         images = [i[3:] for i in tags if i.startswith("IU_")]
+         return images
+ 
++    def validateMasterMount(self):
++        return fileUtils.isMounted(mountPoint=self.getMasterDir())
++
+     def getIsoList(self, extension):
+         """Get list of all ISO/Floppy images
+             'extension' - 'iso'/'floppy' for ISO/Floppy images
+diff --git a/vdsm/storage/fileSD.py b/vdsm/storage/fileSD.py
+index 0a05de4..9dfedfb 100644
+--- a/vdsm/storage/fileSD.py
++++ b/vdsm/storage/fileSD.py
+@@ -185,6 +185,9 @@ class FileStorageDomain(sd.StorageDomain):
+         self._metadata.copy()
+         return True
+ 
++    def validateMasterMount(self):
++         return oop.fileUtils.pathExists(self.getMasterDir())
++
+     def getAllImages(self):
+         """
+         Fetch the list of the Image UUIDs
+diff --git a/vdsm/storage/sd.py b/vdsm/storage/sd.py
+index 74b2916..15bcd12 100644
+--- a/vdsm/storage/sd.py
++++ b/vdsm/storage/sd.py
+@@ -428,10 +428,9 @@ class StorageDomain:
+         if not self.isMaster():
+             return stat
+ 
+-        masterdir = self.getMasterDir()
+         # If the host is SPM then at this point masterFS should be mounted
+         # In HSM case we can return False and then upper logic should handle it
+-        if not fileUtils.isMounted(mountPoint=masterdir):
++        if not self.validateMasterMount():
+             stat['mount'] = False
+             return stat
+ 
+-- 
+1.7.3.4
+
